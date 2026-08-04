@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>竹知鸟 - Telegram Mini App</title>
+    <!-- Telegram Mini App SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- PixiJS v7 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none; /* 彻底阻止手机下拉刷新与缩放 */
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #090814;
+        }
+        #game-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* 统一字体定义：幼圆，后备微软雅黑 */
+        .ui-text-style {
+            font-family: "YouYuan", "幼圆", "Microsoft YaHei", "微软雅黑", sans-serif;
+            font-weight: bold;
+            color: #ffffff;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7), 0 0 12px rgba(255, 255, 255, 0.2);
+            white-space: nowrap;
+        }
+
+        /* 右下角极具跳出感的纯字 UI (适配手机与平板) */
+        #channel-btn {
+            position: absolute;
+            bottom: clamp(16px, 4vh, 32px);
+            right: clamp(16px, 4vw, 36px);
+            font-size: clamp(15px, 3.2vw, 22px);
+            background: none;
+            border: none;
+            padding: 0;
+            cursor: pointer;
+            letter-spacing: 1px;
+            transform-origin: bottom right;
+            animation: popOutText 1.4s infinite ease-in-out;
+        }
+
+        @keyframes popOutText {
+            0%, 100% {
+                transform: scale(1) rotate(0deg);
+            }
+            15% {
+                transform: scale(1.18) rotate(-2deg);
+            }
+            30% {
+                transform: scale(1.04) rotate(1.5deg);
+            }
+            45% {
+                transform: scale(1.14) rotate(-1deg);
+            }
+            60% {
+                transform: scale(1.02) rotate(0deg);
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 界面 UI 层 -->
+    <div id="channel-btn" class="ui-text-style">加入官方TG频道</div>
+
+    <canvas id="game-canvas"></canvas>
+
+<script>
+// --- 1. Telegram Mini App 初始化 ---
+if (window.Telegram && window.Telegram.WebApp) {
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+}
+
+// 绑定右下角频道点击事件
+document.getElementById('channel-btn').addEventListener('click', () => {
+    const channelUrl = "https://t.me/winniexiaoxixi"; 
+    if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.openTelegramLink) {
+        window.Telegram.WebApp.openTelegramLink(channelUrl);
+    } else {
+        window.open(channelUrl, '_blank');
+    }
+});
+
+// --- 2. 真实声学音效管理器 (Web Audio API) ---
+class SoundManager {
+    constructor(soundUrl) {
+        this.ctx = null;
+        this.buffer = null;
+        this.source = null;
+        this.gainNode = null;
+        this.isPlaying = false;
+        this.soundUrl = soundUrl;
+        this.isUnlocked = false;
+        this.init();
+    }
+
+    init() {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AudioContext();
+        
+        fetch(this.soundUrl)
+            .then(res => res.arrayBuffer())
+            .then(arrayBuffer => this.ctx.decodeAudioData(arrayBuffer))
+            .then(decodedData => { this.buffer = decodedData; })
+            .catch(err => {
+                console.warn("未检测到 wa.wav，启用松香摩擦合成音:", err);
+                this.createSynthBuffer();
+            });
+    }
+
+    createSynthBuffer() {
+        const sampleRate = this.ctx.sampleRate;
+        const duration = 0.15;
+        const buffer = this.ctx.createBuffer(1, sampleRate * duration, sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < buffer.length; i++) {
+            const t = i / sampleRate;
+            const noise = (Math.random() * 2 - 1) * 0.15;
+            data[i] = (Math.sin(2 * Math.PI * 980 * t) * 0.5 + 
+                       Math.sin(2 * Math.PI * 1960 * t) * 0.3 + noise) 
+                      * Math.exp(-t / 0.05);
+        }
+        this.buffer = buffer;
+    }
+
+    unlock() {
+        if (!this.isUnlocked && this.ctx.state === 'suspended') {
+            this.ctx.resume();
+            this.isUnlocked = true;
+        }
+    }
+
+    updateSound(angularSpeed) {
+        if (!this.buffer || !this.isUnlocked) return;
+
+        const minThreshold = 0.015;
+        if (angularSpeed > minThreshold) {
+            if (!this.isPlaying) this.startLoop();
+
+            const speedRatio = Math.min((angularSpeed - minThreshold) / 0.18, 3.0);
+            if (this.source) {
+                this.source.playbackRate.setValueAtTime(0.7 + speedRatio * 0.85, this.ctx.currentTime);
+            }
+            if (this.gainNode) {
+                this.gainNode.gain.setValueAtTime(Math.min(0.1 + speedRatio * 0.9, 1.0), this.ctx.currentTime);
+            }
+        } else {
+            if (this.isPlaying) this.stopLoop();
+        }
+    }
+
+    startLoop() {
+        if (this.isPlaying || !this.buffer) return;
+        this.source = this.ctx.createBufferSource();
+        this.source.buffer = this.buffer;
+        this.source.loop = true;
+
+        this.gainNode = this.ctx.createGain();
+        this.source.connect(this.gainNode);
+        this.gainNode.connect(this.ctx.destination);
+
+        this.source.start(0);
+        this.isPlaying = true;
+    }
+
+    stopLoop() {
+        if (!this.isPlaying) return;
+        if (this.source) {
+            this.source.stop();
+            this.source.disconnect();
+            this.source = null;
+        }
+        this.isPlaying = false;
+    }
+}
+
+const audioMgr = new SoundManager('wa.wav');
+
+// --- 3. PixiJS 场景初始化 ---
+const canvas = document.getElementById('game-canvas');
+const app = new PIXI.Application({
+    view: canvas,
+    resizeTo: window,
+    antialias: true,
+    resolution: window.devicePixelRatio || 1
+});
+
+const mainContainer = new PIXI.Container();
+app.stage.addChild(mainContainer);
+
+const bgGraphics = new PIXI.Graphics();
+const backLayer = new PIXI.Container();
+const stickGroup = new PIXI.Container();
+const stringGraphics = new PIXI.Graphics();
+const frontLayer = new PIXI.Container();
+
+mainContainer.addChild(bgGraphics);
+mainContainer.addChild(backLayer);
+mainContainer.addChild(stickGroup);
+mainContainer.addChild(stringGraphics);
+mainContainer.addChild(frontLayer);
+
+// --- 4. 绘制暗夜卡通烟花背景 ---
+function drawNightBackground() {
+    bgGraphics.clear();
+    const w = app.screen.width;
+    const h = app.screen.height;
+
+    bgGraphics.beginFill(0x090814);
+    bgGraphics.drawRect(0, 0, w, h);
+    bgGraphics.endFill();
+
+    const fireworks = [
+        { x: w * 0.2, y: h * 0.22, color: 0xff3b93, radius: 150, alpha: 0.18 },
+        { x: w * 0.8, y: h * 0.18, color: 0x3bcfff, radius: 170, alpha: 0.15 },
+        { x: w * 0.5, y: h * 0.40, color: 0xffcb3b, radius: 190, alpha: 0.12 },
+        { x: w * 0.85, y: h * 0.72, color: 0x9b51e0, radius: 140, alpha: 0.16 },
+        { x: w * 0.15, y: h * 0.78, color: 0xff6b3b, radius: 160, alpha: 0.14 }
+    ];
+
+    fireworks.forEach(fw => {
+        for (let r = fw.radius; r > 0; r -= 25) {
+            bgGraphics.beginFill(fw.color, fw.alpha * (r / fw.radius));
+            bgGraphics.drawCircle(fw.x, fw.y, r);
+            bgGraphics.endFill();
+        }
+    });
+
+    for (let i = 0; i < 35; i++) {
+        const sx = (Math.sin(i * 99) * 0.5 + 0.5) * w;
+        const sy = (Math.cos(i * 33) * 0.5 + 0.5) * h;
+        bgGraphics.beginFill(0xffffff, 0.35 + Math.sin(i) * 0.3);
+        bgGraphics.drawCircle(sx, sy, (i % 3) + 1.2);
+        bgGraphics.endFill();
+    }
+}
+drawNightBackground();
+
+// --- 5. 矢量绘制外观 ---
+function createStick() {
+    const g = new PIXI.Graphics();
+    
+    g.beginFill(0xf2e6ce);
+    g.drawRoundedRect(-6, 0, 12, 360, 6);
+    g.endFill();
+    
+    g.beginFill(0xd2c09d);
+    g.drawRect(-6, 110, 12, 4);
+    g.drawRect(-6, 220, 12, 4);
+    g.endFill();
+
+    g.beginFill(0xcc2222);
+    g.drawCircle(0, -35, 16);
+    g.drawCircle(0, -5, 16);
+    g.endFill();
+
+    g.beginFill(0xddaa55);
+    g.drawCircle(0, -20, 8);
+    g.endFill();
+
+    return g;
+}
+
+function createCicada() {
+    const container = new PIXI.Container();
+
+    const body = new PIXI.Graphics();
+    body.beginFill(0xded7b8);
+    body.drawRoundedRect(-28, -35, 56, 80, 10);
+    body.endFill();
+
+    const topBand = new PIXI.Graphics();
+    topBand.beginFill(0xd63031);
+    topBand.drawRoundedRect(-28, -35, 56, 20, 5);
+    topBand.endFill();
+
+    const eyeLeft = new PIXI.Graphics().beginFill(0x111111).drawCircle(-14, -8, 5.5).endFill();
+    const eyeRight = new PIXI.Graphics().beginFill(0x111111).drawCircle(14, -8, 5.5).endFill();
+
+    const createWing = (isLeft) => {
+        const wing = new PIXI.Graphics();
+        wing.beginFill(0xfffcfa);
+        wing.lineStyle(1.5, 0xc8bf9e);
+        wing.moveTo(0, 0);
+        wing.quadraticCurveTo(isLeft ? -24 : 24, 35, isLeft ? -14 : 14, 80);
+        wing.quadraticCurveTo(0, 85, 0, 0);
+        wing.endFill();
+
+        wing.lineStyle(1, 0xe0d7bc);
+        wing.moveTo(isLeft ? -7 : 7, 18);
+        wing.lineTo(isLeft ? -9 : 9, 65);
+        return wing;
+    };
+
+    const wingLeft = createWing(true);
+    const wingRight = createWing(false);
+    wingLeft.position.set(-4, -2);
+    wingRight.position.set(4, -2);
+
+    container.addChild(body);
+    container.addChild(topBand);
+    container.addChild(wingLeft);
+    container.addChild(wingRight);
+    container.addChild(eyeLeft);
+    container.addChild(eyeRight);
+
+    return container;
+}
+
+const stickGraphics = createStick();
+stickGroup.addChild(stickGraphics);
+
+const cicadaGraphic = createCicada();
+
+// --- 6. 多节点 Verlet 柔性绳索物理引擎 ---
+
+const TOTAL_ROPE_LENGTH = 80; // 绳长 160
+const NUM_ROPE_NODES = 12;     // 12 节点
+const SEGMENT_LENGTH = TOTAL_ROPE_LENGTH / (NUM_ROPE_NODES - 1);
+
+const GRAVITY_Y = 0.42;
+const GRAVITY_Z = -0.06;
+
+let targetInput = { x: app.screen.width / 2, y: app.screen.height * 0.35 };
+let lastInput = { x: targetInput.x, y: targetInput.y };
+
+let stickPos = { x: targetInput.x, y: targetInput.y };
+let lastStickPos = { x: stickPos.x, y: stickPos.y };
+
+// 初始化 12 节点绳链
+const ropeNodes = [];
+for (let i = 0; i < NUM_ROPE_NODES; i++) {
+    ropeNodes.push({
+        x: targetInput.x,
+        y: targetInput.y + i * SEGMENT_LENGTH,
+        z: 0,
+        oldX: targetInput.x,
+        oldY: targetInput.y + i * SEGMENT_LENGTH,
+        oldZ: 0
+    });
+}
+
+let isInteracting = false;
+
+// 事件监听 (Mouse & Touch)
+app.stage.eventMode = 'static';
+app.stage.hitArea = app.screen;
+
+app.stage.on('pointerdown', (e) => {
+    isInteracting = true;
+    audioMgr.unlock();
+    updateInput(e);
+});
+
+app.stage.on('pointermove', (e) => {
+    if (isInteracting) {
+        updateInput(e);
+    }
+});
+
+app.stage.on('pointerup', () => { isInteracting = false; });
+app.stage.on('pointerupoutside', () => { isInteracting = false; });
+
+function updateInput(e) {
+    targetInput.x = e.global.x;
+    targetInput.y = e.global.y;
+}
+
+function getAnchorPoint() {
+    return { x: stickPos.x, y: stickPos.y - 20, z: 0 };
+}
+
+// --- 7. 游戏主循环 (Ticker) ---
+app.ticker.add(() => {
+    // 7.1 手部速度与竹棒追踪
+    const handDx = targetInput.x - lastInput.x;
+    const handDy = targetInput.y - lastInput.y;
+    const handSpeed = Math.sqrt(handDx * handDx + handDy * handDy);
+    lastInput.x = targetInput.x;
+    lastInput.y = targetInput.y;
+
+    stickPos.x += (targetInput.x - stickPos.x) * 0.55;
+    stickPos.y += (targetInput.y - stickPos.y) * 0.55;
+    stickGroup.position.set(stickPos.x, stickPos.y);
+
+    const stickVelX = stickPos.x - lastStickPos.x;
+    const stickVelY = stickPos.y - lastStickPos.y;
+    lastStickPos.x = stickPos.x;
+    lastStickPos.y = stickPos.y;
+
+    const anchor = getAnchorPoint();
+
+    // 7.2 固定绳头部节点到竹棒顶端
+    ropeNodes[0].x = anchor.x;
+    ropeNodes[0].y = anchor.y;
+    ropeNodes[0].z = anchor.z;
+
+    const endNode = ropeNodes[NUM_ROPE_NODES - 1];
+
+    // 7.3 将手部切向甩劲注入末端知鸟
+    const rx = endNode.x - anchor.x;
+    const ry = endNode.y - anchor.y;
+    const dist2D = Math.sqrt(rx * rx + ry * ry);
+
+    if (dist2D > 15 && handSpeed > 1.2) {
+        const tangentX = -ry / dist2D;
+        const tangentY = rx / dist2D;
+        const dot = stickVelX * tangentX + stickVelY * tangentY;
+        const boostFactor = 0.45;
+
+        endNode.x += tangentX * dot * boostFactor;
+        endNode.y += tangentY * dot * boostFactor;
+    }
+
+    // 7.4 Verlet 物理积分 (重力 + 阻力)
+    const damping = (handSpeed > 2.0) ? 0.992 : 0.98;
+
+    for (let i = 1; i < NUM_ROPE_NODES; i++) {
+        const node = ropeNodes[i];
+
+        const vx = (node.x - node.oldX) * damping;
+        const vy = (node.y - node.oldY) * damping;
+        const vz = (node.z - node.oldZ) * damping;
+
+        node.oldX = node.x;
+        node.oldY = node.y;
+        node.oldZ = node.z;
+
+        const nodeMassFactor = (i === NUM_ROPE_NODES - 1) ? 1.2 : 0.8;
+
+        node.x += vx;
+        node.y += vy + GRAVITY_Y * nodeMassFactor;
+        node.z += vz + GRAVITY_Z;
+    }
+
+    // 7.5 多步绳索节点距离约束 (迭代 8 次)
+    for (let iter = 0; iter < 8; iter++) {
+        ropeNodes[0].x = anchor.x;
+        ropeNodes[0].y = anchor.y;
+        ropeNodes[0].z = anchor.z;
+
+        for (let i = 0; i < NUM_ROPE_NODES - 1; i++) {
+            const n1 = ropeNodes[i];
+            const n2 = ropeNodes[i + 1];
+
+            const dx = n2.x - n1.x;
+            const dy = n2.y - n1.y;
+            const dz = n2.z - n1.z;
+
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 0.001;
+            const diff = (dist - SEGMENT_LENGTH) / dist;
+
+            if (i === 0) {
+                n2.x -= dx * diff;
+                n2.y -= dy * diff;
+                n2.z -= dz * diff;
+            } else {
+                n1.x += dx * diff * 0.5;
+                n1.y += dy * diff * 0.5;
+                n1.z += dz * diff * 0.5;
+
+                n2.x -= dx * diff * 0.5;
+                n2.y -= dy * diff * 0.5;
+                n2.z -= dz * diff * 0.5;
+            }
+        }
+    }
+
+    // 7.6 3D 到 2D 视角投影转换
+    const tiltAngle = Math.PI / 4.5;
+    const projNodes = ropeNodes.map(node => ({
+        x: node.x,
+        y: node.y + node.z * Math.sin(tiltAngle),
+        z: node.z
+    }));
+
+    // 7.7 绘制二次贝塞尔平滑柔性绳索
+    stringGraphics.clear();
+    
+    const endZ = projNodes[NUM_ROPE_NODES - 1].z;
+    const scaleFactor = 1.0 + (endZ / 700);
+    const alpha = Math.min(0.9, Math.max(0.25, 0.4 + (endZ / 600) * 0.4));
+    
+    stringGraphics.lineStyle(2.4 * Math.max(0.5, scaleFactor), 0xe8e6f5, alpha);
+    stringGraphics.moveTo(projNodes[0].x, projNodes[0].y);
+
+    for (let i = 1; i < NUM_ROPE_NODES - 1; i++) {
+        const xc = (projNodes[i].x + projNodes[i + 1].x) / 2;
+        const yc = (projNodes[i].y + projNodes[i + 1].y) / 2;
+        stringGraphics.quadraticCurveTo(projNodes[i].x, projNodes[i].y, xc, yc);
+    }
+    stringGraphics.lineTo(projNodes[NUM_ROPE_NODES - 1].x, projNodes[NUM_ROPE_NODES - 1].y);
+
+    // 7.8 渲染末端竹知鸟与 Z-Order 遮挡
+    const cicadaProj = projNodes[NUM_ROPE_NODES - 1];
+    cicadaGraphic.scale.set(Math.max(0.4, scaleFactor));
+
+    if (cicadaProj.z >= 0) {
+        if (cicadaGraphic.parent !== frontLayer) frontLayer.addChild(cicadaGraphic);
+    } else {
+        if (cicadaGraphic.parent !== backLayer) backLayer.addChild(cicadaGraphic);
+    }
+
+    cicadaGraphic.position.set(cicadaProj.x, cicadaProj.y);
+
+    const lastSeg = projNodes[NUM_ROPE_NODES - 2];
+    const stringAngle = Math.atan2(cicadaProj.y - lastSeg.y, cicadaProj.x - lastSeg.x);
+    cicadaGraphic.rotation = stringAngle - Math.PI / 2;
+
+    // 7.9 计算物理角速度并驱动音效
+    const curDx = endNode.x - anchor.x;
+    const curDy = endNode.y - anchor.y;
+    const currentAngle = Math.atan2(curDy, curDx);
+
+    const prevDx = endNode.oldX - anchor.x;
+    const prevDy = endNode.oldY - anchor.y;
+    const prevAngle = Math.atan2(prevDy, prevDx);
+
+    let angleDelta = currentAngle - prevAngle;
+    while (angleDelta < -Math.PI) angleDelta += Math.PI * 2;
+    while (angleDelta > Math.PI) angleDelta -= Math.PI * 2;
+
+    const angularSpeed = Math.abs(angleDelta);
+    audioMgr.updateSound(angularSpeed);
+});
+
+// 窗口适配
+window.addEventListener('resize', () => {
+    app.renderer.resize(window.innerWidth, window.innerHeight);
+    app.stage.hitArea = app.screen;
+    drawNightBackground();
+});
+</script>
+</body>
+</html>
