@@ -10,4 +10,5 @@
 # 遥遥领先的TG频道
 虽然咱们的频道才刚刚成立，但是很快就会超英赶美，弯道超车！最后实现技术自给自足，不再怕帝国主义敌人卡脖子！
 https://t.me/winniexiaoxixi
-<img width="948" height="1126" alt="image" src="https://github.com/user-attachments/assets/53e438ea-5538-470e-8ab2-0119e5adfdb1" />
+<img width="948" height="982" alt="image" src="https://github.com/user-attachments/assets/30a9f703-e6c5-44a3-b1f3-c3a930d97558" />
+
